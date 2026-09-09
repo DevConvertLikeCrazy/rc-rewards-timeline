@@ -403,6 +403,7 @@ class RewardsTimeline extends HTMLElement {
 
       const check = step.state === "done" ? `<span class="rt-check">${CHECK_SVG}</span>` : "";
       const label = step.state === "next" ? "On going month" : step.label;
+      const sub = step.state === "done" ? "Received" : step.sub;
 
       return `
         <div class="rt-step rt-step--${step.state}">
@@ -413,7 +414,7 @@ class RewardsTimeline extends HTMLElement {
           <div class="rt-content">
             <div class="rt-label">${this._escape(label)}</div>
             <div class="rt-gift">${this._escape(step.gift)}</div>
-            <div class="rt-sub">${this._escape(step.sub)}</div>
+            ${sub ? `<div class="rt-sub">${this._escape(sub)}</div>` : ""}
           </div>
         </div>
       `;
