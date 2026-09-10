@@ -92,7 +92,7 @@ function stepsFromThemeGifts() {
         sub: String(gift.subtitle || "").trim(),
         img: isBadge ? "badge" : image,
         fallback: isBadge ? percentMatch[1].replace(/\s/g, "") : "🎁",
-        state: "locked",
+        state: "pending",
       };
     });
 }
@@ -113,6 +113,14 @@ function applyGiftStates(successfulPayments) {
       step.state = "locked";
     }
   });
+}
+
+function fillRatio() {
+  if (STEPS.length <= 1) return 0;
+  const doneCount = STEPS.filter(function (step) {
+    return step.state === "done";
+  }).length;
+  return Math.min(1, doneCount / (STEPS.length - 1));
 }
 
 function pickPaymentCount(summaries) {
@@ -185,6 +193,9 @@ function ensureGiftProgress(force) {
       })
       .catch(function (err) {
         progressLoad = null;
+        STEPS.forEach(function (step) {
+          if (step.state === "pending") step.state = "locked";
+        });
         console.warn("[new-section.js][test] fetch failed", err);
       });
   }
@@ -274,9 +285,12 @@ const STYLES = `
     position: absolute;
     top: 36px;
     left: 12.5%;
+    width: 75%;
     height: 3px;
     background: ${TOKENS.green};
-    /* width set inline per completed-step count */
+    transform: scaleX(var(--rt-fill, 0));
+    transform-origin: left center;
+    transition: transform 0.85s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .rt-step {
@@ -300,14 +314,23 @@ const STYLES = `
     overflow: hidden;
     background: #fff;
     border: 3px solid ${TOKENS.line};
+    transition: border-color 0.45s ease, background-color 0.45s ease, box-shadow 0.45s ease;
+    transition-delay: calc(var(--rt-i, 0) * 70ms);
   }
   .rt-step--next .rt-circle { background: ${TOKENS.greenBg}; border-color: ${TOKENS.green}; }
   .rt-step--done .rt-circle { border-color: ${TOKENS.green}; }
+  .rt-step--pending .rt-circle {
+    animation: rt-pulse 1.6s ease-in-out infinite;
+  }
 
   .rt-circle img {
     width: 78%;
     height: 78%;
     object-fit: contain;
+    opacity: 1;
+    filter: grayscale(0);
+    transition: opacity 0.45s ease, filter 0.45s ease;
+    transition-delay: calc(var(--rt-i, 0) * 70ms);
   }
   .rt-step--locked .rt-circle img { opacity: 0.4; filter: grayscale(1); }
   .rt-circle .rt-badge { font-size: 17px; font-weight: 800; color: ${TOKENS.muted}; }
@@ -326,6 +349,8 @@ const STYLES = `
     align-items: center;
     justify-content: center;
     z-index: 3;
+    animation: rt-check-in 0.35s ease both;
+    animation-delay: calc(var(--rt-i, 0) * 70ms);
   }
 
   .rt-label {
@@ -334,6 +359,8 @@ const STYLES = `
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: ${TOKENS.muted};
+    transition: color 0.45s ease;
+    transition-delay: calc(var(--rt-i, 0) * 70ms);
   }
   .rt-step--next .rt-label { color: ${TOKENS.green}; }
 
@@ -342,6 +369,8 @@ const STYLES = `
     font-weight: 700;
     margin-top: 3px;
     color: ${TOKENS.ink};
+    transition: color 0.45s ease;
+    transition-delay: calc(var(--rt-i, 0) * 70ms);
   }
   .rt-step--locked .rt-gift { color: ${TOKENS.muted}; }
 
@@ -350,8 +379,19 @@ const STYLES = `
     font-weight: 400;
     color: ${TOKENS.muted};
     margin-top: 2px;
+    transition: color 0.45s ease, font-weight 0.45s ease;
+    transition-delay: calc(var(--rt-i, 0) * 70ms);
   }
   .rt-step--done .rt-sub { font-weight: 700; color: ${TOKENS.green}; }
+
+  @keyframes rt-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(47, 160, 106, 0); }
+    50% { box-shadow: 0 0 0 8px rgba(47, 160, 106, 0.12); }
+  }
+  @keyframes rt-check-in {
+    from { transform: scale(0.4); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
 
   /* ---------- mobile: vertical stepper ---------- */
   :host([data-size="mobile"]) .rt-card { padding: 20px; }
@@ -369,6 +409,10 @@ const STYLES = `
     width: 3px !important;
     height: 95%;
   }
+  :host([data-size="mobile"]) .rt-rail-fill {
+    transform: scaleY(var(--rt-fill, 0));
+    transform-origin: top center;
+  }
   :host([data-size="mobile"]) .rt-step {
     flex-direction: row;
     align-items: flex-start;
@@ -383,6 +427,14 @@ const STYLES = `
   :host([data-size="mobile"]) .rt-circle .rt-badge { font-size: 14px; }
   :host([data-size="mobile"]) .rt-check { width: 20px; height: 20px; }
   :host([data-size="mobile"]) .rt-content { padding-top: 4px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rt-step--pending .rt-circle { animation: none; }
+    .rt-rail-fill, .rt-circle, .rt-circle img, .rt-label, .rt-gift, .rt-sub, .rt-check {
+      transition: none;
+      animation: none;
+    }
+  }
 `;
 
 class RewardsTimeline extends HTMLElement {
@@ -390,6 +442,7 @@ class RewardsTimeline extends HTMLElement {
     super();
     this._shadow = this.attachShadow({ mode: "open" });
     this._resizeObserver = null;
+    this._revealed = false;
   }
 
   connectedCallback() {
@@ -413,7 +466,20 @@ class RewardsTimeline extends HTMLElement {
 
   async _loadProgress(force) {
     await ensureGiftProgress(force);
-    this._render();
+    if (!this.isConnected) return;
+
+    const reveal = () => {
+      if (!this.isConnected) return;
+      this._revealed = true;
+      if (!this._syncSteps()) this._render();
+    };
+
+    if (force && this._revealed) {
+      reveal();
+      return;
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(reveal));
   }
 
   _observeSize() {
@@ -424,17 +490,67 @@ class RewardsTimeline extends HTMLElement {
     this._resizeObserver.observe(this);
   }
 
+  _stepState(step) {
+    return this._revealed ? step.state : "pending";
+  }
+
+  _syncSteps() {
+    const grid = this._shadow.querySelector(".rt-grid");
+    if (!grid) return false;
+
+    const nodes = grid.querySelectorAll(".rt-step");
+    if (nodes.length !== STEPS.length) return false;
+
+    grid.style.setProperty("--rt-fill", String(this._revealed ? fillRatio() : 0));
+
+    STEPS.forEach((step, index) => {
+      const el = nodes[index];
+      const state = this._stepState(step);
+      el.className = `rt-step rt-step--${state}`;
+      el.style.setProperty("--rt-i", String(index));
+
+      const wrap = el.querySelector(".rt-circle-wrap");
+      let check = wrap && wrap.querySelector(".rt-check");
+      if (state === "done") {
+        if (!check && wrap) {
+          wrap.insertAdjacentHTML("beforeend", `<span class="rt-check">${CHECK_SVG}</span>`);
+        }
+      } else if (check) {
+        check.remove();
+      }
+
+      const label = state === "next" ? "On going month" : step.label;
+      const sub = state === "done" ? "Received" : step.sub;
+      const labelEl = el.querySelector(".rt-label");
+      const giftEl = el.querySelector(".rt-gift");
+      const contentEl = el.querySelector(".rt-content");
+      if (labelEl) labelEl.textContent = label;
+      if (giftEl) giftEl.textContent = step.gift;
+
+      let subEl = el.querySelector(".rt-sub");
+      if (sub) {
+        if (!subEl && contentEl) {
+          subEl = document.createElement("div");
+          subEl.className = "rt-sub";
+          contentEl.appendChild(subEl);
+        }
+        if (subEl) subEl.textContent = sub;
+      } else if (subEl) {
+        subEl.remove();
+      }
+    });
+
+    return true;
+  }
+
   _render() {
     if (!STEPS.length) {
       this._shadow.innerHTML = "";
       return;
     }
 
-    const doneCount = STEPS.filter((s) => s.state === "done").length;
-    const fillPct =
-      STEPS.length > 1 ? Math.min(75, (doneCount / (STEPS.length - 1)) * 75) : 0;
-
-    const stepsHtml = STEPS.map((step) => {
+    const stepsHtml = STEPS.map((step, index) => {
+      const state = this._stepState(step);
       const circleContent =
         step.img === "badge"
           ? `<span class="rt-badge">${this._escape(step.fallback)}</span>`
@@ -442,14 +558,12 @@ class RewardsTimeline extends HTMLElement {
           ? `<img src="${this._escape(step.img)}" alt="${this._escape(step.gift)}" loading="lazy" />`
           : `<span class="rt-fallback">${this._escape(step.fallback || "")}</span>`;
 
-      const check = step.state === "done" ? `<span class="rt-check">${CHECK_SVG}</span>` : "";
-      const label = step.state === "next" ? "On going month" : step.label;
-      const sub = step.state === "done" ? "Received" : step.sub;
-      console.log("step===========>", step);
-      console.log("sub===========>", sub);
+      const check = state === "done" ? `<span class="rt-check">${CHECK_SVG}</span>` : "";
+      const label = state === "next" ? "On going month" : step.label;
+      const sub = state === "done" ? "Received" : step.sub;
 
       return `
-        <div class="rt-step rt-step--${step.state}">
+        <div class="rt-step rt-step--${state}" style="--rt-i:${index}">
           <div class="rt-circle-wrap">
             <div class="rt-circle">${circleContent}</div>
             ${check}
@@ -467,9 +581,9 @@ class RewardsTimeline extends HTMLElement {
       <style>${STYLES}</style>
       <div class="rt-card">
         <div class="rt-heading">${this._escape(HEADING)}</div>
-        <div class="rt-grid" style="--rt-cols:${STEPS.length}">
+        <div class="rt-grid" style="--rt-cols:${STEPS.length}; --rt-fill:${this._revealed ? fillRatio() : 0}">
           <div class="rt-rail"></div>
-          <div class="rt-rail-fill" style="width:${fillPct}%"></div>
+          <div class="rt-rail-fill"></div>
           ${stepsHtml}
         </div>
       </div>
