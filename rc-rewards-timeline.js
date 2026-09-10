@@ -445,6 +445,8 @@ class RewardsTimeline extends HTMLElement {
       const check = step.state === "done" ? `<span class="rt-check">${CHECK_SVG}</span>` : "";
       const label = step.state === "next" ? "On going month" : step.label;
       const sub = step.state === "done" ? "Received" : step.sub;
+      console.log("step===========>", step);
+      console.log("sub===========>", sub);
 
       return `
         <div class="rt-step rt-step--${step.state}">
