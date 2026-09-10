@@ -1,37 +1,75 @@
 const SDK_URL = "https://static.rechargecdn.com/assets/storefront/recharge-client-1.81.0.min.js";
 const TAG_NAME = "rc-rewards-timeline";
 
+let sdkLoad = null;
+
 function loadSdk() {
   if (window.recharge) return Promise.resolve(window.recharge);
+  if (sdkLoad) return sdkLoad;
 
-  return new Promise(function (resolve, reject) {
+  sdkLoad = new Promise(function (resolve, reject) {
+    if (window.recharge) {
+      resolve(window.recharge);
+      return;
+    }
+
     const script = document.createElement("script");
     script.src = SDK_URL;
     script.onload = function () {
-      window.recharge.init({ appName: TAG_NAME });
+      if (!window.recharge) {
+        sdkLoad = null;
+        reject(new Error("Failed to load Recharge SDK"));
+        return;
+      }
+      try {
+        window.recharge.init({ appName: TAG_NAME });
+      } catch (err) {
+        // Portal may have initialized the same global while this script was loading.
+      }
       resolve(window.recharge);
     };
     script.onerror = function () {
+      sdkLoad = null;
       reject(new Error("Failed to load Recharge SDK"));
     };
     document.head.appendChild(script);
   });
+
+  return sdkLoad;
 }
 
-function waitForPortalSdk(timeoutMs) {
+function getRechargeSdk() {
   if (window.recharge) return Promise.resolve(window.recharge);
 
-  return new Promise(function (resolve) {
-    const startedAt = Date.now();
+  return new Promise(function (resolve, reject) {
+    let settled = false;
+
     const timer = setInterval(function () {
-      if (window.recharge) {
+      if (!settled && window.recharge) {
+        settled = true;
         clearInterval(timer);
         resolve(window.recharge);
-      } else if (Date.now() - startedAt > timeoutMs) {
-        clearInterval(timer);
-        resolve(null);
       }
-    }, 200);
+    }, 50);
+
+    loadSdk().then(
+      function (rc) {
+        if (!settled) {
+          settled = true;
+          clearInterval(timer);
+          resolve(rc);
+        }
+      },
+      function (err) {
+        setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          clearInterval(timer);
+          if (window.recharge) resolve(window.recharge);
+          else reject(err);
+        }, 2500);
+      }
+    );
   });
 }
 
@@ -89,37 +127,38 @@ function pickPaymentCount(summaries) {
 }
 
 async function fetchSuccessfulPayments() {
-  const existing = await waitForPortalSdk(2500);
-  const rc = existing || (await loadSdk());
+  const rc = await getRechargeSdk();
   const session = await rc.auth.loginCustomerPortal();
   const subsResult = await rc.subscription.listSubscriptions(session, {
     limit: 25,
     sort_by: "created_at-asc",
   });
   const subscriptions = (subsResult && subsResult.subscriptions) || [];
-  const summaries = [];
+  const chargeLimit = Math.max(STEPS.length + 1, 2);
 
-  for (const sub of subscriptions) {
-    let successfulPayments = 0;
+  const summaries = await Promise.all(
+    subscriptions.map(async function (sub) {
+      let successfulPayments = 0;
 
-    try {
-      const chargesResult = await rc.charge.listCharges(session, {
-        purchase_item_id: sub.id,
-        status: "success",
-        limit: 250,
-      });
-      successfulPayments = ((chargesResult && chargesResult.charges) || []).length;
-    } catch (chargeErr) {
-      console.warn("[new-section.js][test] charges error", sub.id, chargeErr);
-    }
+      try {
+        const chargesResult = await rc.charge.listCharges(session, {
+          purchase_item_id: sub.id,
+          status: "success",
+          limit: chargeLimit,
+        });
+        successfulPayments = ((chargesResult && chargesResult.charges) || []).length;
+      } catch (chargeErr) {
+        console.warn("[new-section.js][test] charges error", sub.id, chargeErr);
+      }
 
-    summaries.push({
-      id: sub.id,
-      status: sub.status,
-      product_title: sub.product_title,
-      successfulPayments: successfulPayments,
-    });
-  }
+      return {
+        id: sub.id,
+        status: sub.status,
+        product_title: sub.product_title,
+        successfulPayments: successfulPayments,
+      };
+    })
+  );
 
   const paymentCount = pickPaymentCount(summaries);
   console.log("[new-section.js][test] successful payments", {
@@ -151,6 +190,8 @@ function ensureGiftProgress(force) {
   }
   return progressLoad;
 }
+
+ensureGiftProgress();
 
 /**
  * Rewards Timeline — Affinity 2.0 custom extension
