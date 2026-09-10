@@ -155,9 +155,7 @@ async function fetchSuccessfulPayments() {
           limit: chargeLimit,
         });
         successfulPayments = ((chargesResult && chargesResult.charges) || []).length;
-      } catch (chargeErr) {
-        console.warn("[new-section.js][test] charges error", sub.id, chargeErr);
-      }
+      } catch (chargeErr) {}
 
       return {
         id: sub.id,
@@ -168,14 +166,7 @@ async function fetchSuccessfulPayments() {
     })
   );
 
-  const paymentCount = pickPaymentCount(summaries);
-  console.log("[new-section.js][test] successful payments", {
-    summaries: summaries,
-    paymentCount: paymentCount,
-    completedGifts: Math.max(0, paymentCount - 1),
-  });
-
-  return paymentCount;
+  return pickPaymentCount(summaries);
 }
 
 let progressLoad = null;
@@ -186,9 +177,6 @@ function ensureGiftProgress(force) {
     progressLoad = fetchSuccessfulPayments()
       .then(function (count) {
         applyGiftStates(count);
-        console.log("[new-section.js][test] gift states", STEPS.map(function (step) {
-          return { label: step.label, gift: step.gift, state: step.state };
-        }));
         return count;
       })
       .catch(function (err) {
@@ -196,7 +184,6 @@ function ensureGiftProgress(force) {
         STEPS.forEach(function (step) {
           if (step.state === "pending") step.state = "locked";
         });
-        console.warn("[new-section.js][test] fetch failed", err);
       });
   }
   return progressLoad;
