@@ -124,17 +124,16 @@ function fillRatio() {
 }
 
 function pickPaymentCount(summaries) {
-  const active = summaries.filter(function (item) {
-    return String(item.status).toLowerCase() === "active";
-  });
-  const pool = active.length ? active : summaries;
-
-  return pool.reduce(function (max, item) {
+  return summaries.reduce(function (max, item) {
     return Math.max(max, item.successfulPayments || 0);
   }, 0);
 }
 
-async function fetchSuccessfulPayments() {
+function isActiveSubscription(item) {
+  return String(item.status).toLowerCase() === "active";
+}
+
+async function fetchGiftProgress() {
   const rc = await getRechargeSdk();
   const session = await rc.auth.loginCustomerPortal();
   const subsResult = await rc.subscription.listSubscriptions(session, {
@@ -142,10 +141,15 @@ async function fetchSuccessfulPayments() {
     sort_by: "created_at-asc",
   });
   const subscriptions = (subsResult && subsResult.subscriptions) || [];
-  const chargeLimit = Math.max(STEPS.length + 1, 2);
+  const active = subscriptions.filter(isActiveSubscription);
 
+  if (!active.length) {
+    return { hasActive: false, paymentCount: 0 };
+  }
+
+  const chargeLimit = Math.max(STEPS.length + 1, 2);
   const summaries = await Promise.all(
-    subscriptions.map(async function (sub) {
+    active.map(async function (sub) {
       let successfulPayments = 0;
 
       try {
@@ -166,18 +170,23 @@ async function fetchSuccessfulPayments() {
     })
   );
 
-  return pickPaymentCount(summaries);
+  return {
+    hasActive: true,
+    paymentCount: pickPaymentCount(summaries),
+  };
 }
 
 let progressLoad = null;
+let hasActiveSubscription = true;
 
 function ensureGiftProgress(force) {
   if (force) progressLoad = null;
   if (!progressLoad) {
-    progressLoad = fetchSuccessfulPayments()
-      .then(function (count) {
-        applyGiftStates(count);
-        return count;
+    progressLoad = fetchGiftProgress()
+      .then(function (result) {
+        hasActiveSubscription = result.hasActive;
+        if (result.hasActive) applyGiftStates(result.paymentCount);
+        return result;
       })
       .catch(function (err) {
         progressLoad = null;
@@ -205,6 +214,7 @@ ensureGiftProgress();
  *   - tag name: lowercase, must contain a hyphen (set when registering, e.g. rc-rewards-timeline)
  *
  * Gift copy/images come from Theme settings → Customer portal.
+ * Hidden when the customer has no active subscription.
  * Step state is derived from successfulPayments - 1 (first charge is
  * the signup payment; gifts start on later months).
  */
@@ -236,6 +246,9 @@ const STYLES = `
     display: block;
     font-family: ${TOKENS.font};
     box-sizing: border-box;
+  }
+  :host([hidden]) {
+    display: none;
   }
   *, *::before, *::after { box-sizing: border-box; }
 
@@ -455,6 +468,13 @@ class RewardsTimeline extends HTMLElement {
     await ensureGiftProgress(force);
     if (!this.isConnected) return;
 
+    if (!hasActiveSubscription) {
+      this._setVisible(false);
+      return;
+    }
+
+    this._setVisible(true);
+
     const reveal = () => {
       if (!this.isConnected) return;
       this._revealed = true;
@@ -467,6 +487,12 @@ class RewardsTimeline extends HTMLElement {
     }
 
     requestAnimationFrame(() => requestAnimationFrame(reveal));
+  }
+
+  _setVisible(visible) {
+    this.hidden = !visible;
+    this.style.display = visible ? "" : "none";
+    if (!visible) this._shadow.innerHTML = "";
   }
 
   _observeSize() {
@@ -531,10 +557,12 @@ class RewardsTimeline extends HTMLElement {
   }
 
   _render() {
-    if (!STEPS.length) {
-      this._shadow.innerHTML = "";
+    if (!hasActiveSubscription || !STEPS.length) {
+      this._setVisible(false);
       return;
     }
+
+    this._setVisible(true);
 
     const stepsHtml = STEPS.map((step, index) => {
       const state = this._stepState(step);
