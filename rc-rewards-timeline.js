@@ -76,7 +76,7 @@ function getRechargeSdk() {
 function stepsFromThemeGifts() {
   const gifts = Array.isArray(window.customerPortalGifts) ? window.customerPortalGifts : [];
 
-  return gifts
+  const steps = gifts
     .filter(function (gift) {
       return gift && String(gift.title || "").trim();
     })
@@ -95,6 +95,8 @@ function stepsFromThemeGifts() {
         state: "pending",
       };
     });
+
+  return steps.slice(0, -1);
 }
 
 let STEPS = stepsFromThemeGifts();
